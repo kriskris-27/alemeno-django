@@ -1,0 +1,22 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Environments
+.env
+env/
+.venv/
+
+# Django / runtime
+*.log
+*.sqlite3
+staticfiles/
+
+# Tooling / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Local data inputs
+data/*.xlsx
