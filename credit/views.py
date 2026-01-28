@@ -283,6 +283,35 @@ class ViewLoanView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class ViewLoansByCustomerView(APIView):
+    def get(self, request, customer_id: int):
+        loans = Loan.objects.filter(customer__customer_id=customer_id)
+        if not loans.exists():
+            return Response({"detail": "No loans found for this customer."}, status=status.HTTP_404_NOT_FOUND)
+
+        today = timezone.now().date()
+        items = []
+        for loan in loans:
+            # approximate repayments left based on time remaining vs tenure
+            total_days = max((loan.end_date - loan.start_date).days, 1)
+            elapsed_days = max((today - loan.start_date).days, 0)
+            elapsed_ratio = min(1, elapsed_days / total_days)
+            paid_emis = int(round(elapsed_ratio * loan.tenure))
+            repayments_left = max(0, loan.tenure - paid_emis)
+
+            items.append(
+                {
+                    "loan_id": loan.loan_id,
+                    "loan_amount": float(loan.loan_amount),
+                    "interest_rate": float(loan.interest_rate),
+                    "monthly_installment": float(loan.monthly_repayment),
+                    "repayments_left": repayments_left,
+                }
+            )
+
+        return Response(items, status=status.HTTP_200_OK)
     
 from rest_framework import viewsets
 from .models import Customer
