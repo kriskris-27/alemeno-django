@@ -1,5 +1,6 @@
 from decimal import Decimal
 from typing import Tuple
+from datetime import timedelta
 
 from django.db import transaction
 from django.utils import timezone
@@ -10,6 +11,7 @@ from rest_framework.views import APIView
 from .models import Customer, Loan
 from .serializers import (
     CheckEligibilityRequestSerializer,
+    CreateLoanRequestSerializer,
     CustomerSerializer,
     RegisterCustomerSerializer,
 )
@@ -107,63 +109,23 @@ class CheckEligibilityView(APIView):
             return Response({"detail": "Customer not found."}, status=status.HTTP_404_NOT_FOUND)
 
         loans = Loan.objects.filter(customer=customer)
-        score, active_amount, active_emi = _compute_credit_score(customer, loans)
-
-        loan_amount = Decimal(data["loan_amount"])
-        requested_rate = Decimal(data["interest_rate"])
-        tenure = int(data["tenure"])
-
-        # If score is zero due to limits
-        if score == 0:
+        decision = evaluate_loan_request(
+            customer=customer,
+            loans=loans,
+            loan_amount=Decimal(data["loan_amount"]),
+            requested_rate=Decimal(data["interest_rate"]),
+            tenure=int(data["tenure"]),
+        )
+        if not decision["approval"]:
             return Response(
                 {
                     "customer_id": customer.customer_id,
                     "approval": False,
-                    "interest_rate": float(requested_rate),
-                    "corrected_interest_rate": None,
-                    "tenure": tenure,
-                    "monthly_installment": None,
-                    "reason": "credit score zero (active loans exceed limit)",
-                },
-                status=status.HTTP_200_OK,
-            )
-
-        # Determine slab
-        if score > 50:
-            min_rate = requested_rate
-        elif score > 30:
-            min_rate = Decimal("12")
-        elif score > 10:
-            min_rate = Decimal("16")
-        else:
-            return Response(
-                {
-                    "customer_id": customer.customer_id,
-                    "approval": False,
-                    "interest_rate": float(requested_rate),
-                    "corrected_interest_rate": None,
-                    "tenure": tenure,
-                    "monthly_installment": None,
-                    "reason": "credit score too low",
-                },
-                status=status.HTTP_200_OK,
-            )
-
-        corrected_rate = max(requested_rate, min_rate)
-        monthly_installment = _compute_emi(loan_amount, corrected_rate, tenure)
-
-        # EMI constraint: total EMIs should not exceed 50% of salary
-        total_emi = active_emi + monthly_installment
-        if total_emi > (customer.monthly_salary * Decimal("0.5")):
-            return Response(
-                {
-                    "customer_id": customer.customer_id,
-                    "approval": False,
-                    "interest_rate": float(requested_rate),
-                    "corrected_interest_rate": float(corrected_rate),
-                    "tenure": tenure,
-                    "monthly_installment": float(monthly_installment),
-                    "reason": "emi exceeds 50% of monthly salary",
+                    "interest_rate": float(decision["requested_rate"]),
+                    "corrected_interest_rate": float(decision["corrected_rate"]) if decision["corrected_rate"] else None,
+                    "tenure": decision["tenure"],
+                    "monthly_installment": float(decision["monthly_installment"]) if decision["monthly_installment"] else None,
+                    "reason": decision["reason"],
                 },
                 status=status.HTTP_200_OK,
             )
@@ -172,10 +134,152 @@ class CheckEligibilityView(APIView):
             {
                 "customer_id": customer.customer_id,
                 "approval": True,
-                "interest_rate": float(requested_rate),
-                "corrected_interest_rate": float(corrected_rate),
-                "tenure": tenure,
-                "monthly_installment": float(monthly_installment),
+                "interest_rate": float(decision["requested_rate"]),
+                "corrected_interest_rate": float(decision["corrected_rate"]),
+                "tenure": decision["tenure"],
+                "monthly_installment": float(decision["monthly_installment"]),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+def evaluate_loan_request(customer: Customer, loans, loan_amount: Decimal, requested_rate: Decimal, tenure: int):
+    score, active_amount, active_emi = _compute_credit_score(customer, loans)
+
+    if score == 0:
+        return {
+            "approval": False,
+            "requested_rate": requested_rate,
+            "corrected_rate": None,
+            "tenure": tenure,
+            "monthly_installment": None,
+            "reason": "credit score zero (active loans exceed limit)",
+        }
+
+    if score > 50:
+        min_rate = requested_rate
+    elif score > 30:
+        min_rate = Decimal("12")
+    elif score > 10:
+        min_rate = Decimal("16")
+    else:
+        return {
+            "approval": False,
+            "requested_rate": requested_rate,
+            "corrected_rate": None,
+            "tenure": tenure,
+            "monthly_installment": None,
+            "reason": "credit score too low",
+        }
+
+    corrected_rate = max(requested_rate, min_rate)
+    monthly_installment = _compute_emi(loan_amount, corrected_rate, tenure)
+
+    total_emi = active_emi + monthly_installment
+    if total_emi > (customer.monthly_salary * Decimal("0.5")):
+        return {
+            "approval": False,
+            "requested_rate": requested_rate,
+            "corrected_rate": corrected_rate,
+            "tenure": tenure,
+            "monthly_installment": monthly_installment,
+            "reason": "emi exceeds 50% of monthly salary",
+        }
+
+    return {
+        "approval": True,
+        "requested_rate": requested_rate,
+        "corrected_rate": corrected_rate,
+        "tenure": tenure,
+        "monthly_installment": monthly_installment,
+    }
+
+
+class CreateLoanView(APIView):
+    def post(self, request):
+        serializer = CreateLoanRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        try:
+            customer = Customer.objects.get(customer_id=data["customer_id"])
+        except Customer.DoesNotExist:
+            return Response({"detail": "Customer not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        loans = Loan.objects.filter(customer=customer)
+        decision = evaluate_loan_request(
+            customer=customer,
+            loans=loans,
+            loan_amount=Decimal(data["loan_amount"]),
+            requested_rate=Decimal(data["interest_rate"]),
+            tenure=int(data["tenure"]),
+        )
+
+        if not decision["approval"]:
+            return Response(
+                {
+                    "loan_id": None,
+                    "customer_id": customer.customer_id,
+                    "loan_approved": False,
+                    "message": decision["reason"],
+                    "monthly_installment": float(decision["monthly_installment"]) if decision["monthly_installment"] else None,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        with transaction.atomic():
+            next_id = (Loan.objects.order_by("-loan_id").first().loan_id + 1) if Loan.objects.exists() else 1
+            start_date = timezone.now().date()
+            end_date = start_date + timedelta(days=decision["tenure"] * 30)
+
+            loan = Loan.objects.create(
+                loan_id=next_id,
+                customer=customer,
+                loan_amount=Decimal(data["loan_amount"]),
+                tenure=decision["tenure"],
+                interest_rate=decision["corrected_rate"],
+                monthly_repayment=decision["monthly_installment"],
+                emis_paid_on_time=0,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            customer.current_debt = customer.current_debt + Decimal(data["loan_amount"])
+            customer.save(update_fields=["current_debt"])
+
+        return Response(
+            {
+                "loan_id": loan.loan_id,
+                "customer_id": customer.customer_id,
+                "loan_approved": True,
+                "message": "Loan approved",
+                "monthly_installment": float(decision["monthly_installment"]),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ViewLoanView(APIView):
+    def get(self, request, loan_id: int):
+        try:
+            loan = Loan.objects.select_related("customer").get(loan_id=loan_id)
+        except Loan.DoesNotExist:
+            return Response({"detail": "Loan not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        customer = loan.customer
+        return Response(
+            {
+                "loan_id": loan.loan_id,
+                "customer": {
+                    "id": customer.customer_id,
+                    "first_name": customer.first_name,
+                    "last_name": customer.last_name,
+                    "phone_number": customer.phone_number,
+                    "age": customer.age,
+                },
+                "loan_amount": float(loan.loan_amount),
+                "interest_rate": float(loan.interest_rate),
+                "monthly_installment": float(loan.monthly_repayment),
+                "tenure": loan.tenure,
             },
             status=status.HTTP_200_OK,
         )
