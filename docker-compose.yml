@@ -8,6 +8,8 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    volumes:
+      - ./data:/app/data
     depends_on:
       - db
       - redis
@@ -33,6 +35,8 @@ services:
     command: celery -A django_rest_main worker --loglevel=info
     env_file:
       - .env
+    volumes:
+      - ./data:/app/data
     depends_on:
       - db
       - redis

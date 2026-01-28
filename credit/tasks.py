@@ -34,11 +34,14 @@ def _decimal(value) -> Decimal:
 @shared_task
 def ingest_customers_from_excel(filename: str = "customer_data.xlsx") -> Dict[str, int]:
     df = _load_excel(filename)
-    required = {"customer_id", "first_name", "last_name", "phone_number", "monthly_salary", "approved_limit", "current_debt"}
+    required = {"customer_id", "first_name", "last_name", "phone_number", "monthly_salary", "approved_limit"}
     missing = required - set(df.columns)
     if missing:
         logger.error("Missing columns in %s: %s", filename, missing)
         return {"created": 0, "skipped": len(df)}
+
+    if "current_debt" not in df.columns:
+        df["current_debt"] = 0
 
     customers: List[Customer] = []
     skipped = 0
@@ -75,20 +78,20 @@ def ingest_customers_from_excel(filename: str = "customer_data.xlsx") -> Dict[st
 @shared_task
 def ingest_loans_from_excel(filename: str = "loan_data.xlsx") -> Dict[str, int]:
     df = _load_excel(filename)
-    required = {
-        "customer_id",
-        "loan_id",
-        "loan_amount",
-        "tenure",
-        "interest_rate",
-        "monthly_repayment",
-        "emis_paid_on_time",
-        "start_date",
-        "end_date",
-    }
-    missing = required - set(df.columns)
-    if missing:
-        logger.error("Missing columns in %s: %s", filename, missing)
+    base_required = {"customer_id", "loan_id", "loan_amount", "tenure", "interest_rate", "end_date"}
+    missing_base = base_required - set(df.columns)
+    has_repayment = "monthly_repayment" in df.columns or "monthly_payment" in df.columns
+    has_start = "start_date" in df.columns or "date_of_approval" in df.columns
+
+    errors = []
+    if missing_base:
+        errors.append(f"Missing columns: {missing_base}")
+    if not has_repayment:
+        errors.append("Missing monthly repayment column (monthly_repayment or monthly_payment)")
+    if not has_start:
+        errors.append("Missing start date column (start_date or date_of_approval)")
+    if errors:
+        logger.error("Issues in %s: %s", filename, "; ".join(errors))
         return {"created": 0, "skipped": len(df)}
 
     customers_map = Customer.objects.in_bulk(field_name="customer_id")
@@ -100,6 +103,8 @@ def ingest_loans_from_excel(filename: str = "loan_data.xlsx") -> Dict[str, int]:
             skipped += 1
             continue
         try:
+            monthly_repay = row["monthly_repayment"] if "monthly_repayment" in row else row.get("monthly_payment")
+            start_date = row["start_date"] if "start_date" in row else row.get("date_of_approval")
             loans.append(
                 Loan(
                     loan_id=int(row["loan_id"]),
@@ -107,9 +112,9 @@ def ingest_loans_from_excel(filename: str = "loan_data.xlsx") -> Dict[str, int]:
                     loan_amount=_decimal(row["loan_amount"]),
                     tenure=int(row["tenure"]),
                     interest_rate=_decimal(row["interest_rate"]),
-                    monthly_repayment=_decimal(row["monthly_repayment"]),
+                    monthly_repayment=_decimal(monthly_repay),
                     emis_paid_on_time=int(row.get("emis_paid_on_time", 0)),
-                    start_date=pd.to_datetime(row["start_date"]).date(),
+                    start_date=pd.to_datetime(start_date).date(),
                     end_date=pd.to_datetime(row["end_date"]).date(),
                 )
             )
