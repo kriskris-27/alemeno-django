@@ -15,3 +15,10 @@ class RegisterCustomerSerializer(serializers.Serializer):
     age = serializers.IntegerField(min_value=0, required=False, allow_null=True)
     monthly_income = serializers.DecimalField(max_digits=12, decimal_places=2)
     phone_number = serializers.CharField(max_length=30)
+
+
+class CheckEligibilityRequestSerializer(serializers.Serializer):
+    customer_id = serializers.IntegerField(min_value=1)
+    loan_amount = serializers.DecimalField(max_digits=12, decimal_places=2)
+    interest_rate = serializers.DecimalField(max_digits=5, decimal_places=2)
+    tenure = serializers.IntegerField(min_value=1)
