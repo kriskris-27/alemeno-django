@@ -28,6 +28,8 @@ DEBUG = os.getenv("DJANGO_DEBUG", "True").lower() == "true"
 
 ALLOWED_HOSTS = [h for h in os.getenv("DJANGO_ALLOWED_HOSTS", "*").split(",") if h]
 
+DATA_DIR = Path(os.getenv("DATA_DIR", BASE_DIR / "data"))
+
 
 # Application definition
 
