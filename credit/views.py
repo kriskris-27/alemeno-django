@@ -51,6 +51,9 @@ class RegisterView(APIView):
         }
         return Response(resp, status=status.HTTP_201_CREATED)
 
+    def get(self, request):
+        return render(request, "credit/register.html")
+
 
 def _compute_emi(principal: Decimal, annual_rate: Decimal, tenure_months: int) -> Decimal:
     r = (annual_rate / Decimal("100")) / Decimal("12")
@@ -320,3 +323,4 @@ from .serializers import CustomerSerializer
 class CustomerViewSet(viewsets.ModelViewSet):
     queryset = Customer.objects.all()
     serializer_class = CustomerSerializer
+from django.shortcuts import render
