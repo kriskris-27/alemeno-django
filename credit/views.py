@@ -47,7 +47,7 @@ class RegisterView(APIView):
             "age": customer.age,
             "monthly_income": int(monthly_income),
             "approved_limit": int(approved_limit),
-            "phone_number": customer.phone_number,
+            "phone_number": int(customer.phone_number),
         }
         return Response(resp, status=status.HTTP_201_CREATED)
 
@@ -125,14 +125,13 @@ class CheckEligibilityView(APIView):
                     "customer_id": customer.customer_id,
                     "approval": False,
                     "interest_rate": float(decision["requested_rate"]),
-                    "corrected_interest_rate": float(decision["corrected_rate"]) if decision["corrected_rate"] else None,
+                    "corrected_interest_rate": float(decision["corrected_rate"]),
                     "tenure": decision["tenure"],
-                    "monthly_installment": float(decision["monthly_installment"]) if decision["monthly_installment"] else None,
+                    "monthly_installment": float(decision["monthly_installment"]),
                     "reason": decision["reason"],
                 },
                 status=status.HTTP_200_OK,
             )
-
         return Response(
             {
                 "customer_id": customer.customer_id,
@@ -146,39 +145,56 @@ class CheckEligibilityView(APIView):
         )
 
 
-def evaluate_loan_request(customer: Customer, loans, loan_amount: Decimal, requested_rate: Decimal, tenure: int):
-    score, active_amount, active_emi = _compute_credit_score(customer, loans)
+def evaluate_loan_request(
+    customer: Customer, loans, loan_amount: Decimal, requested_rate: Decimal, tenure: int
+) -> dict:
+    credit_score, total_active_amount, total_active_emi = _compute_credit_score(customer, loans)
 
-    if score == 0:
+    approval = False
+    corrected_rate = requested_rate
+    reason = ""
+
+    if credit_score > 70:
+        approval = True
+    elif 50 <= credit_score <= 70:
+        if requested_rate <= Decimal("10"):
+            approval = True
+        else:
+            corrected_rate = Decimal("10")
+            approval = True
+    elif 30 <= credit_score < 50:
+        if requested_rate <= Decimal("12"):
+            approval = True
+        else:
+            corrected_rate = Decimal("12")
+            approval = True
+    else:  # credit_score < 30
+        reason = "Credit score too low."
+
+    if not approval:
         return {
             "approval": False,
             "requested_rate": requested_rate,
-            "corrected_rate": None,
+            "corrected_rate": corrected_rate,
             "tenure": tenure,
-            "monthly_installment": None,
-            "reason": "credit score zero (active loans exceed limit)",
+            "monthly_installment": _compute_emi(loan_amount, corrected_rate, tenure),
+            "reason": reason,
         }
 
-    if score > 50:
-        min_rate = requested_rate
-    elif score > 30:
-        min_rate = Decimal("12")
-    elif score > 10:
-        min_rate = Decimal("16")
-    else:
+    # Check current debt
+    if customer.current_debt + loan_amount > customer.approved_limit:
         return {
             "approval": False,
             "requested_rate": requested_rate,
-            "corrected_rate": None,
+            "corrected_rate": corrected_rate,
             "tenure": tenure,
-            "monthly_installment": None,
-            "reason": "credit score too low",
+            "monthly_installment": _compute_emi(loan_amount, corrected_rate, tenure),
+            "reason": "Loan amount exceeds approved limit considering current debt.",
         }
 
-    corrected_rate = max(requested_rate, min_rate)
     monthly_installment = _compute_emi(loan_amount, corrected_rate, tenure)
+    total_emi = total_active_emi + monthly_installment
 
-    total_emi = active_emi + monthly_installment
     if total_emi > (customer.monthly_salary * Decimal("0.5")):
         return {
             "approval": False,
@@ -225,7 +241,7 @@ class CreateLoanView(APIView):
                     "customer_id": customer.customer_id,
                     "loan_approved": False,
                     "message": decision["reason"],
-                    "monthly_installment": float(decision["monthly_installment"]) if decision["monthly_installment"] else None,
+                    "monthly_installment": float(decision["monthly_installment"]),
                 },
                 status=status.HTTP_200_OK,
             )
@@ -276,13 +292,14 @@ class ViewLoanView(APIView):
                     "id": customer.customer_id,
                     "first_name": customer.first_name,
                     "last_name": customer.last_name,
-                    "phone_number": customer.phone_number,
+                    "phone_number": int(customer.phone_number),
                     "age": customer.age,
                 },
                 "loan_amount": float(loan.loan_amount),
                 "interest_rate": float(loan.interest_rate),
                 "monthly_installment": float(loan.monthly_repayment),
                 "tenure": loan.tenure,
+                "loan_approved": True,
             },
             status=status.HTTP_200_OK,
         )

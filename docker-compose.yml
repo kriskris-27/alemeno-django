@@ -3,7 +3,7 @@ version: "3.9"
 services:
   web:
     build: .
-    command: sh -c "python manage.py migrate && gunicorn django_rest_main.wsgi:application --bind 0.0.0.0:8000"
+    command: sh -c "python manage.py migrate && python manage.py ingest_initial_data && gunicorn django_rest_main.wsgi:application --bind 0.0.0.0:8000"
     ports:
       - "8000:8000"
     env_file:
